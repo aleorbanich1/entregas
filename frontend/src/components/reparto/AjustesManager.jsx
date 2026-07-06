@@ -1,8 +1,11 @@
-import { useEffect, useState } from "react";
-import { MapPinned, Crosshair, Check } from "lucide-react";
+import { useEffect, useState, lazy, Suspense } from "react";
+import { MapPinned, Crosshair, Check, Map as MapIcon } from "lucide-react";
 import { api } from "../../utils/api";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
+
+// Leaflet sólo se descarga cuando abrís el mapa.
+const MapPicker = lazy(() => import("./MapPicker"));
 
 /**
  * Ajustes — origen del local (punto de partida del recorrido) y plantilla de
@@ -22,6 +25,11 @@ export function AjustesManager() {
 
   const [geoBusy, setGeoBusy] = useState(false);
   const [geoMsg, setGeoMsg] = useState("");
+  const [showMap, setShowMap] = useState(false);
+  const [mapKey, setMapKey] = useState(0); // recentrar el mapa al geocodificar
+  const [savingOrigen, setSavingOrigen] = useState(false);
+  const [savedOrigen, setSavedOrigen] = useState(false);
+  const [origenError, setOrigenError] = useState("");
 
   useEffect(() => {
     let alive = true;
@@ -50,7 +58,9 @@ export function AjustesManager() {
       if (res?.geocode_status === "ok" && res.lat != null) {
         setLat(res.lat);
         setLng(res.lng);
-        setGeoMsg("Ubicación encontrada ✓");
+        setMapKey((k) => k + 1); // recentrar el mapa en el nuevo punto
+        setShowMap(true); // mostrar el mapa para confirmar/ajustar a mano
+        setGeoMsg("Ubicación encontrada ✓ — ajustá el pin si hace falta");
       } else if (res?.geocode_status === "no_encontrada") {
         setGeoMsg("No se encontró la dirección. Revisá que esté completa.");
       } else {
@@ -60,6 +70,29 @@ export function AjustesManager() {
       setGeoMsg("No se pudo ubicar (sin conexión).");
     } finally {
       setGeoBusy(false);
+    }
+  }
+
+  // Guarda SOLO el origen del local (botón dedicado, bien visible).
+  async function guardarOrigen() {
+    setSavingOrigen(true);
+    setOrigenError("");
+    setSavedOrigen(false);
+    try {
+      await api("/config", {
+        method: "PATCH",
+        body: {
+          origen_nombre: origenNombre.trim() || null,
+          origen_lat: lat,
+          origen_lng: lng,
+        },
+      });
+      setSavedOrigen(true);
+      setTimeout(() => setSavedOrigen(false), 2500);
+    } catch (e) {
+      setOrigenError(e?.message || "No se pudo guardar el origen.");
+    } finally {
+      setSavingOrigen(false);
     }
   }
 
@@ -130,12 +163,68 @@ export function AjustesManager() {
         </div>
 
         {geoMsg && <p className="mt-2 text-xs text-slate-500">{geoMsg}</p>}
-        {ubicado && (
-          <p className="mt-2 inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-400">
-            <MapPinned className="h-3 w-3" />
-            {Number(lat).toFixed(5)}, {Number(lng).toFixed(5)}
-          </p>
+
+        {/* Marcar en el mapa */}
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <Button variant="secondary" size="sm" onClick={() => setShowMap((v) => !v)}>
+            <MapIcon className="h-4 w-4" />
+            {showMap ? "Ocultar mapa" : "Marcar en el mapa"}
+          </Button>
+          {ubicado && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-400">
+              <MapPinned className="h-3 w-3" />
+              {Number(lat).toFixed(5)}, {Number(lng).toFixed(5)}
+            </span>
+          )}
+        </div>
+
+        {showMap && (
+          <div className="mt-3">
+            <p className="mb-2 text-xs text-slate-500">
+              Tocá el mapa (o arrastrá el pin) para marcar exactamente dónde está el local.
+            </p>
+            <Suspense
+              fallback={
+                <div className="flex h-64 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900">
+                  Cargando mapa…
+                </div>
+              }
+            >
+              <MapPicker
+                key={mapKey}
+                lat={lat}
+                lng={lng}
+                center={ubicado ? [Number(lat), Number(lng)] : undefined}
+                onChange={(la, ln) => {
+                  setLat(la);
+                  setLng(ln);
+                  setGeoMsg("");
+                }}
+              />
+            </Suspense>
+          </div>
         )}
+
+        {origenError && (
+          <p className="mt-3 text-sm text-red-600 dark:text-red-400">{origenError}</p>
+        )}
+
+        <Button
+          onClick={guardarOrigen}
+          disabled={savingOrigen || (!origenNombre.trim() && !ubicado)}
+          className="mt-3 w-full"
+        >
+          {savedOrigen ? (
+            <>
+              <Check className="h-4 w-4" />
+              Origen guardado
+            </>
+          ) : savingOrigen ? (
+            "Guardando…"
+          ) : (
+            "Guardar origen"
+          )}
+        </Button>
       </div>
 
       {/* Plantilla de WhatsApp */}

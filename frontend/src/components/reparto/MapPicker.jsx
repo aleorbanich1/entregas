@@ -58,6 +58,22 @@ export function MapPicker({ lat, lng, center, onChange }) {
 
     if (lat != null && lng != null) place(lat, lng, false);
 
+    // Sin punto previo ni centro: arrancar cerca de la ubicación del dispositivo.
+    if (lat == null && lng == null && !center && typeof navigator !== "undefined" && "geolocation" in navigator) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const la = pos?.coords?.latitude;
+          const ln = pos?.coords?.longitude;
+          // sólo recentrar si el usuario todavía no marcó nada
+          if (mapRef.current && !markerRef.current && la != null && ln != null) {
+            mapRef.current.setView([la, ln], 15);
+          }
+        },
+        () => {},
+        { enableHighAccuracy: false, timeout: 8000, maximumAge: 600000 }
+      );
+    }
+
     map.on("click", (e) => {
       const { lat: la, lng: ln } = e.latlng;
       place(la, ln, false);

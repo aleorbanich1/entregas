@@ -111,7 +111,7 @@ export default function Reparto() {
           {/* Contenido */}
           <div className="mt-4">
             {tab === "hoy" && <RepartidorHoy />}
-            {tab === "ruta" && <HojaDeRuta fechaDefault={manana()} />}
+            {tab === "ruta" && <HojaDeRuta />}
             {tab === "zonas" && <ZonasManager />}
             {tab === "camiones" && <CamionesManager />}
             {tab === "ajustes" && <AjustesManager />}

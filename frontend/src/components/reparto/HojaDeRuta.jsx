@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Reorder, useDragControls } from "framer-motion";
 import {
   Wand2,
@@ -10,6 +10,7 @@ import {
   CheckCircle2,
   AlertCircle,
   Pencil,
+  Trash2,
 } from "lucide-react";
 import { api } from "../../utils/api";
 import { planRoute, buildGoogleMapsLinks, routeDistanceKm } from "../../utils/ruta";
@@ -26,17 +27,35 @@ const hasCoords = (e) => e.lat != null && e.lng != null;
 const zonaNombre = (e) => e?.zona?.nombre || "Sin zona";
 const sortByOrden = (a, b) => (a.orden ?? 0) - (b.orden ?? 0) || Number(a.id) - Number(b.id);
 
+// Fecha de HOY en formato local (yyyy-MM-dd), sin librería.
+const hoy = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate()
+  ).padStart(2, "0")}`;
+};
+
+// Recordar la fecha/camión elegidos aunque cambies de pestaña.
+const RUTA_KEY = "mg_reparto_ruta";
+function readRuta() {
+  try {
+    return JSON.parse(localStorage.getItem(RUTA_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
 /**
  * HojaDeRuta — arma el recorrido por camión y fecha (default mañana): agrupa por
  * zona, calcula el orden (vecino-más-cercano + 2-opt desde el origen del local),
  * permite reordenar a mano (drag) y recalcular, abrir en Google Maps y publicar.
  * Todo por api()/transport (encolable offline).
  */
-export function HojaDeRuta({ fechaDefault }) {
-  const [fecha, setFecha] = useState(fechaDefault);
+export function HojaDeRuta() {
+  const [fecha, setFecha] = useState(() => readRuta().fecha || hoy());
   const [showCal, setShowCal] = useState(false);
   const [camiones, setCamiones] = useState([]);
-  const [camionId, setCamionId] = useState("");
+  const [camionId, setCamionId] = useState(() => readRuta().camionId || "");
   const [origin, setOrigin] = useState(null);
 
   const [raw, setRaw] = useState([]);
@@ -48,6 +67,16 @@ export function HojaDeRuta({ fechaDefault }) {
   const [msg, setMsg] = useState("");
   const [error, setError] = useState("");
   const [editando, setEditando] = useState(null); // entrega en edición (o null)
+  const savedInit = useRef(readRuta()); // qué había guardado ANTES de montar
+
+  // Guardar la elección para recordarla al cambiar de pestaña / recargar.
+  useEffect(() => {
+    try {
+      localStorage.setItem(RUTA_KEY, JSON.stringify({ fecha, camionId }));
+    } catch {
+      // no crítico
+    }
+  }, [fecha, camionId]);
 
   // Catálogos: camiones + origen del local (una vez).
   useEffect(() => {
@@ -57,7 +86,10 @@ export function HojaDeRuta({ fechaDefault }) {
       if (c.status === "fulfilled") {
         const activos = (c.value || []).filter((x) => x.activo);
         setCamiones(activos);
-        setCamionId((prev) => prev || (activos[0] ? String(activos[0].id) : ""));
+        // Sólo auto-seleccionar el primero si el usuario NUNCA eligió antes.
+        if (!("camionId" in savedInit.current)) {
+          setCamionId((prev) => prev || (activos[0] ? String(activos[0].id) : ""));
+        }
       }
       if (cfg.status === "fulfilled" && cfg.value?.origen_lat != null) {
         setOrigin({ lat: Number(cfg.value.origen_lat), lng: Number(cfg.value.origen_lng) });
@@ -81,6 +113,20 @@ export function HojaDeRuta({ fechaDefault }) {
   useEffect(() => {
     reload();
   }, [reload]);
+
+  async function borrarEntrega(e) {
+    if (!confirm(`¿Borrar la entrega de ${e?.cliente || "este cliente"}?`)) return;
+    setError("");
+    const prev = raw;
+    setRaw((cur) => cur.filter((x) => Number(x.id) !== Number(e.id)));
+    if (!/^\d+$/.test(String(e.id))) return;
+    try {
+      await api(`/entregas/${e.id}`, { method: "DELETE" });
+    } catch {
+      setRaw(prev);
+      setError("No se pudo borrar la entrega.");
+    }
+  }
 
   // Filtrado por camión (o "sin camión") + orden guardado.
   const filtradas = useMemo(() => {
@@ -260,6 +306,7 @@ export function HojaDeRuta({ fechaDefault }) {
               showZona={i === 0 || zonaNombre(items[i - 1]) !== zonaNombre(e)}
               zona={zonaNombre(e)}
               onEditar={() => setEditando(e)}
+              onBorrar={() => borrarEntrega(e)}
             />
           ))}
         </Reorder.Group>
@@ -318,9 +365,10 @@ export function HojaDeRuta({ fechaDefault }) {
 
 // Fila arrastrable (framer-motion Reorder.Item, hijo directo del Group) con handle
 // propio y, si la zona cambia respecto de la fila anterior, un encabezado de zona.
-function RutaItem({ entrega, index, showZona, zona, onEditar }) {
+function RutaItem({ entrega, index, showZona, zona, onEditar, onBorrar }) {
   const controls = useDragControls();
   const sinUbi = !hasCoords(entrega);
+  const entregado = entrega?.estado === "entregado";
   return (
     <Reorder.Item value={entrega} dragListener={false} dragControls={controls}>
       {showZona && (
@@ -366,6 +414,15 @@ function RutaItem({ entrega, index, showZona, zona, onEditar }) {
         >
           <Pencil className="h-4 w-4" />
         </button>
+        {!entregado && (
+          <button
+            onClick={onBorrar}
+            className="shrink-0 rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20 dark:hover:text-red-400"
+            aria-label="Borrar entrega"
+          >
+            <Trash2 className="h-4 w-4" />
+          </button>
+        )}
       </div>
     </Reorder.Item>
   );

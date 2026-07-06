@@ -1,14 +1,16 @@
 import { useEffect, useState } from "react";
-import { Truck, Plus } from "lucide-react";
+import { Truck, Plus, Pencil, Trash2 } from "lucide-react";
 import { api } from "../../utils/api";
+import { Modal } from "../ui/Modal";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
 import { cn } from "../../utils/cn";
 
+const isReal = (id) => /^\d+$/.test(String(id));
+
 /**
- * Camiones — crear (nombre + patente opcional), listar y activar/desactivar.
- * Los camiones son OPCIONALES: si no se usan, las entregas funcionan igual
- * (camion_id es nullable). Cada repartidor elige su camión del día en otra vista.
+ * Camiones — crear (nombre + patente opcional), listar, activar/desactivar,
+ * editar y borrar. Los camiones son OPCIONALES (camion_id es nullable).
  */
 export function CamionesManager() {
   const [camiones, setCamiones] = useState([]);
@@ -17,6 +19,11 @@ export function CamionesManager() {
   const [nombre, setNombre] = useState("");
   const [patente, setPatente] = useState("");
   const [busy, setBusy] = useState(false);
+
+  // Edición
+  const [editando, setEditando] = useState(null); // camión o null
+  const [edNombre, setEdNombre] = useState("");
+  const [edPatente, setEdPatente] = useState("");
 
   useEffect(() => {
     let alive = true;
@@ -60,6 +67,47 @@ export function CamionesManager() {
     } catch {
       setCamiones((prev) => prev.map((x) => (x.id === c.id ? { ...x, activo: c.activo } : x)));
       setError("No se pudo actualizar el camión");
+    }
+  }
+
+  function abrirEdicion(c) {
+    setEditando(c);
+    setEdNombre(c.nombre || "");
+    setEdPatente(c.patente || "");
+    setError("");
+  }
+
+  async function guardarEdicion() {
+    const n = edNombre.trim();
+    if (!n) return;
+    const patch = { nombre: n, patente: edPatente.trim() || null };
+    setCamiones((prev) => prev.map((x) => (x.id === editando.id ? { ...x, ...patch } : x)));
+    const c = editando;
+    setEditando(null);
+    try {
+      await api(`/camiones/${c.id}`, { method: "PATCH", body: patch });
+    } catch {
+      setError("No se pudo guardar el camión");
+    }
+  }
+
+  async function borrar(c) {
+    if (!confirm(`¿Borrar el camión "${c.nombre}"?`)) return;
+    setError("");
+    const prev = camiones;
+    setCamiones((cur) => cur.filter((x) => x.id !== c.id));
+    if (!isReal(c.id)) return; // era temporal (offline), no hay nada que borrar en el server
+    try {
+      await api(`/camiones/${c.id}`, { method: "DELETE" });
+    } catch (e) {
+      // Suele fallar si el camión tiene entregas asociadas (clave foránea).
+      setCamiones(prev);
+      const msg = String(e?.message || "");
+      setError(
+        /foreign key|violates|constraint/i.test(msg)
+          ? "No se puede borrar: hay entregas con este camión. Desactivalo en su lugar."
+          : "No se pudo borrar el camión."
+      );
     }
   }
 
@@ -133,10 +181,40 @@ export function CamionesManager() {
               >
                 {c.activo ? "Activo" : "Inactivo"}
               </button>
+              <button
+                onClick={() => abrirEdicion(c)}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+                aria-label="Editar"
+              >
+                <Pencil className="h-4 w-4" />
+              </button>
+              <button
+                onClick={() => borrar(c)}
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20 dark:hover:text-red-400"
+                aria-label="Borrar"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
             </li>
           ))}
         </ul>
       )}
+
+      {/* Editar camión */}
+      <Modal isOpen={editando != null} onClose={() => setEditando(null)} title="Editar camión">
+        <div className="flex flex-col gap-3">
+          <Input placeholder="Nombre" value={edNombre} onChange={(e) => setEdNombre(e.target.value)} />
+          <Input
+            placeholder="Patente (opcional)"
+            value={edPatente}
+            onChange={(e) => setEdPatente(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && guardarEdicion()}
+          />
+          <Button onClick={guardarEdicion} disabled={!edNombre.trim()}>
+            Guardar cambios
+          </Button>
+        </div>
+      </Modal>
     </div>
   );
 }

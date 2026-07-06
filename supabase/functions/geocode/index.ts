@@ -108,56 +108,63 @@ Deno.serve(async (req) => {
       });
     }
 
-    // 2) Nominatim. User-Agent con el email de contacto de la config.
+    // 2) Nominatim. User-Agent con el email de contacto + sesgo cerca del origen.
     const { data: cfg } = await admin
       .from("entregas_config")
-      .select("contacto_email")
+      .select("contacto_email, origen_lat, origen_lng")
       .eq("id", 1)
       .maybeSingle();
     const email = cfg?.contacto_email || "reparto@mghogar.local";
+    const lat0 = cfg?.origen_lat;
+    const lng0 = cfg?.origen_lng;
 
-    await throttle(admin);
+    const headers = {
+      "User-Agent": `MG-Hogar-Reparto/1.0 (${email})`,
+      "Accept": "application/json",
+      "Accept-Language": "es",
+    };
+    const baseQ = encodeURIComponent(`${direccion.trim()}, Argentina`);
+    const buildUrl = (bias: boolean) => {
+      let u =
+        "https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=ar&q=" +
+        baseQ;
+      if (bias && lat0 != null && lng0 != null) {
+        const d = 0.6; // caja ~60km alrededor del origen (prioriza esa zona)
+        u += `&viewbox=${lng0 - d},${lat0 + d},${lng0 + d},${lat0 - d}&bounded=1`;
+      }
+      return u;
+    };
 
-    const url =
-      "https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=ar&q=" +
-      encodeURIComponent(`${direccion.trim()}, Argentina`);
-
-    let resp: Response;
-    try {
-      resp = await fetch(url, {
-        headers: {
-          "User-Agent": `MG-Hogar-Reparto/1.0 (${email})`,
-          "Accept": "application/json",
-          "Accept-Language": "es",
-        },
-      });
-    } catch (e) {
-      await log(admin, "error", `fetch: ${e}`);
-      return json({ geocode_status: "fallo", error: "error" });
-    }
-
-    const bodyText = await resp.text();
-
-    // Bloqueo/cuota: 429/403 o mensaje explícito de Nominatim.
-    if (
-      resp.status === 429 ||
-      resp.status === 403 ||
-      /usage limit reached/i.test(bodyText)
-    ) {
-      await log(admin, "bloqueado", `HTTP ${resp.status}`);
-      return json({ geocode_status: "fallo", error: "bloqueado" });
-    }
-
-    if (!resp.ok) {
-      await log(admin, "error", `HTTP ${resp.status}`);
-      return json({ geocode_status: "fallo", error: "error" });
-    }
-
+    // Intento 1: cerca del origen (si está configurado). Intento 2: sin límite.
+    const intentos = lat0 != null && lng0 != null ? [true, false] : [false];
     let arr: Array<{ lat?: string; lon?: string }> = [];
-    try {
-      arr = JSON.parse(bodyText);
-    } catch {
-      arr = [];
+    for (let i = 0; i < intentos.length; i++) {
+      await throttle(admin);
+      let resp: Response;
+      try {
+        resp = await fetch(buildUrl(intentos[i]), { headers });
+      } catch (e) {
+        await log(admin, "error", `fetch: ${e}`);
+        return json({ geocode_status: "fallo", error: "error" });
+      }
+      const bodyText = await resp.text();
+
+      if (resp.status === 429 || resp.status === 403 || /usage limit reached/i.test(bodyText)) {
+        await log(admin, "bloqueado", `HTTP ${resp.status}`);
+        return json({ geocode_status: "fallo", error: "bloqueado" });
+      }
+      if (!resp.ok) {
+        await log(admin, "error", `HTTP ${resp.status}`);
+        return json({ geocode_status: "fallo", error: "error" });
+      }
+
+      try {
+        arr = JSON.parse(bodyText);
+      } catch {
+        arr = [];
+      }
+      if (Array.isArray(arr) && arr.length > 0) break; // encontrado → listo
+      // si no encontró y quedan intentos, reintenta sin sesgo
     }
 
     // 3) Cachear SIEMPRE (encontrado o no).

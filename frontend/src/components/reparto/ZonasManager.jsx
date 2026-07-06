@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { MapPin, Plus, Check, X, ChevronUp, ChevronDown, Pencil } from "lucide-react";
+import { MapPin, Plus, Check, X, ChevronUp, ChevronDown, Pencil, Trash2 } from "lucide-react";
 import { api } from "../../utils/api";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
@@ -102,6 +102,25 @@ export function ZonasManager() {
       );
     } catch {
       setError("No se pudo reordenar");
+    }
+  }
+
+  async function borrar(z) {
+    if (!confirm(`¿Borrar la zona "${z.nombre}"?`)) return;
+    setError("");
+    const prev = zonas;
+    setZonas((cur) => cur.filter((x) => x.id !== z.id));
+    if (!isReal(z.id)) return;
+    try {
+      await api(`/zonas/${z.id}`, { method: "DELETE" });
+    } catch (e) {
+      setZonas(prev);
+      const msg = String(e?.message || "");
+      setError(
+        /foreign key|violates|constraint/i.test(msg)
+          ? "No se puede borrar: hay entregas en esta zona. Desactivala en su lugar."
+          : "No se pudo borrar la zona."
+      );
     }
   }
 
@@ -217,6 +236,13 @@ export function ZonasManager() {
                   <Pencil className="h-4 w-4" />
                 </button>
               )}
+              <button
+                onClick={() => borrar(z)}
+                className="rounded-full p-1 text-slate-400 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20 dark:hover:text-red-400"
+                aria-label="Borrar"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
             </li>
           ))}
         </ul>
