@@ -1,0 +1,8 @@
+{
+  "appId": "com.mghogar.reparto",
+  "appName": "MG Reparto",
+  "webDir": "dist",
+  "android": {
+    "allowMixedContent": true
+  }
+}
