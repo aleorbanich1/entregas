@@ -1,0 +1,7 @@
+# SPA fallback: la app usa React Router (BrowserRouter) con rutas del lado del
+# cliente (/login, /reparto, /reparto/*, /seguir/:token). Sin esta regla, Netlify
+# devuelve 404 (pantalla en blanco) al entrar directo a una ruta o al recargar.
+# Netlify sirve primero cualquier archivo estático real (assets, /logo.png, etc.)
+# y sólo cae a index.html cuando no existe el archivo, así que el ruteo lo resuelve
+# React Router en el navegador.
+/*    /index.html   200
