@@ -29,6 +29,32 @@ function wrapError(error) {
   return new Error(msg);
 }
 
+const timeout = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Broadcast de Realtime con límite de tiempo (best-effort, NUNCA cuelga).
+async function broadcastAviso(event, payload) {
+  try {
+    const ch = supabase.channel("hoja-ruta");
+    await Promise.race([
+      new Promise((resolve) => ch.subscribe((s) => s === "SUBSCRIBED" && resolve())),
+      timeout(2000),
+    ]);
+    await Promise.race([ch.send({ type: "broadcast", event, payload }), timeout(1500)]);
+    await supabase.removeChannel(ch);
+  } catch (_) {
+    // best-effort
+  }
+}
+
+// Invoca la Edge Function de push con límite de tiempo (best-effort).
+async function pushAviso(body) {
+  try {
+    await Promise.race([supabase.functions.invoke("enviar-aviso", { body }), timeout(3000)]);
+  } catch (_) {
+    // best-effort
+  }
+}
+
 // ── Helpers CRUD genéricos (tablas simples: zonas, camiones) ─────────────────
 async function listSimple(table, params, { orderBy = "id", ascending = true } = {}) {
   let q = supabase.from(table).select("*");
@@ -184,6 +210,13 @@ export async function request(path, method = "GET", body = null) {
     }
     if (rawPath.startsWith("/camiones/")) return await byId("entregas_camiones", rawPath.slice("/camiones/".length), method, body);
 
+    // ── MEDIOS DE PAGO (catálogo editable, mismo patrón que zonas) ──
+    if (rawPath === "/medios-pago") {
+      if (method === "GET") return await listSimple("entregas_medios_pago", params, { orderBy: "orden" });
+      if (method === "POST") return await insertSimple("entregas_medios_pago", body);
+    }
+    if (rawPath.startsWith("/medios-pago/")) return await byId("entregas_medios_pago", rawPath.slice("/medios-pago/".length), method, body);
+
     // ── UBICACIÓN DEL CAMIÓN (upsert; alimenta el realtime y /seguir) ──
     if (rawPath === "/ubicacion" && method === "POST") {
       const b = body || {};
@@ -225,8 +258,13 @@ export async function request(path, method = "GET", body = null) {
       if (method === "GET") {
         let q = supabase.from("entregas_eventos").select("*");
         const entregaId = params.get("entrega_id");
+        const tipo = params.get("tipo"); // ej: 'dia_cerrado' para los cierres
+        const order = params.get("order"); // 'reciente' ⇒ más nuevo primero
+        const limit = params.get("limit");
         if (entregaId) q = q.eq("entrega_id", Number(entregaId));
-        q = q.order("created_at", { ascending: true });
+        if (tipo) q = q.eq("tipo", tipo);
+        q = q.order("created_at", { ascending: order !== "reciente" });
+        if (limit) q = q.limit(Number(limit));
         const { data, error } = await q;
         if (error) throw error;
         return data || [];
@@ -238,6 +276,14 @@ export async function request(path, method = "GET", body = null) {
         if (error) throw error;
         return data;
       }
+    }
+    // Borrar un evento por id (ej: un resumen de cierre de día). El permiso
+    // (sólo admin) se controla en la UI; la RLS lo refuerza en la base.
+    if (rawPath.startsWith("/eventos/") && method === "DELETE") {
+      const id = rawPath.slice("/eventos/".length);
+      const { error } = await supabase.from("entregas_eventos").delete().eq("id", Number(id));
+      if (error) throw error;
+      return { ok: true };
     }
 
     // ── HOJA DE RUTA: publicar ──
@@ -255,34 +301,19 @@ export async function request(path, method = "GET", body = null) {
         .select()
         .single();
       if (error) throw error;
-      // Broadcast best-effort (no rompe la publicación si falla).
-      try {
-        const ch = supabase.channel("hoja-ruta");
-        await new Promise((resolve) => {
-          ch.subscribe((status) => status === "SUBSCRIBED" && resolve());
-        });
-        await ch.send({
-          type: "broadcast",
-          event: "HOJA_PUBLICADA",
-          payload: { camion_id: b.camion_id ?? null, fecha: b.fecha ?? null, cantidad: b.cantidad ?? 0 },
-        });
-        await supabase.removeChannel(ch);
-      } catch (_) {
-        // sin realtime igual queda el evento durable
-      }
-      // Push (app cerrada), best-effort: no rompe la publicación si falla/no existe.
-      try {
-        await supabase.functions.invoke("enviar-aviso", {
-          body: {
-            title: "Se publicó la hoja de ruta",
-            body: b.camion_id ? `Camión ${b.camion_id} · ${b.cantidad ?? 0} paradas` : "Revisá tu hoja de hoy",
-            url: "/reparto",
-            tag: "hoja",
-          },
-        });
-      } catch (_) {
-        // sin push igual quedó el evento + broadcast
-      }
+      const camionTxt = b.camion_nombre || (b.camion_id ? `Camión ${b.camion_id}` : "El camión");
+      await broadcastAviso("HOJA_PUBLICADA", {
+        camion_id: b.camion_id ?? null,
+        camion_nombre: b.camion_nombre ?? null,
+        fecha: b.fecha ?? null,
+        cantidad: b.cantidad ?? 0,
+      });
+      await pushAviso({
+        title: "🚚 Camión listo para salir",
+        body: `${camionTxt} está apto para salir · ${b.cantidad ?? 0} entregas`,
+        url: "/reparto",
+        tag: "hoja",
+      });
       return data;
     }
 
@@ -311,33 +342,13 @@ export async function request(path, method = "GET", body = null) {
         .select()
         .single();
       if (error) throw error;
-      try {
-        const ch = supabase.channel("hoja-ruta");
-        await new Promise((resolve) => {
-          ch.subscribe((status) => status === "SUBSCRIBED" && resolve());
-        });
-        await ch.send({
-          type: "broadcast",
-          event: "DIA_CERRADO",
-          payload: { fecha: b.fecha ?? null, resumen: b.resumen ?? null },
-        });
-        await supabase.removeChannel(ch);
-      } catch (_) {
-        // sin realtime igual queda el evento durable
-      }
-      // Push (app cerrada), best-effort.
-      try {
-        await supabase.functions.invoke("enviar-aviso", {
-          body: {
-            title: "Se cerró el día",
-            body: b.fecha ? `Resumen del ${b.fecha}` : "Resumen disponible",
-            url: "/reparto/resumen",
-            tag: "dia",
-          },
-        });
-      } catch (_) {
-        // sin push igual quedó el evento + broadcast
-      }
+      await broadcastAviso("DIA_CERRADO", { fecha: b.fecha ?? null, resumen: b.resumen ?? null });
+      await pushAviso({
+        title: "Se cerró el día",
+        body: b.fecha ? `Resumen del ${b.fecha}` : "Resumen disponible",
+        url: "/reparto/resumen",
+        tag: "dia",
+      });
       return data;
     }
 

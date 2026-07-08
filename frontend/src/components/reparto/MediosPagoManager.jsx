@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { MapPin, Plus, Check, X, ChevronUp, ChevronDown, Pencil, Trash2 } from "lucide-react";
+import { CreditCard, Plus, Check, ChevronUp, ChevronDown, Pencil, Trash2 } from "lucide-react";
 import { api } from "../../utils/api";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
@@ -11,11 +11,12 @@ const sortByOrden = (arr) =>
   [...arr].sort((a, b) => (a.orden ?? 0) - (b.orden ?? 0) || Number(a.id) - Number(b.id));
 
 /**
- * Zonas — lista editable, sin límite de cantidad, ordenable. Todo por api()/transport
- * (/zonas). Actualización optimista: la UI responde ya y la mutación viaja por la cola.
+ * MediosPagoManager — lista editable de medios de pago (Efectivo, Transferencia…).
+ * Mismo patrón que Zonas: alta, renombrar, activar/desactivar, reordenar y borrar.
+ * Los medios activos son los que aparecen al cargar una entrega.
  */
-export function ZonasManager() {
-  const [zonas, setZonas] = useState([]);
+export function MediosPagoManager() {
+  const [medios, setMedios] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [nuevo, setNuevo] = useState("");
@@ -26,9 +27,14 @@ export function ZonasManager() {
 
   useEffect(() => {
     let alive = true;
-    api("/zonas")
-      .then((data) => alive && setZonas(sortByOrden(data || [])))
-      .catch(() => alive && setError("No se pudieron cargar las zonas"))
+    api("/medios-pago")
+      .then((data) => alive && setMedios(sortByOrden(data || [])))
+      .catch(() =>
+        alive &&
+        setError(
+          "No se pudieron cargar los medios de pago. Puede que falte crear la tabla en la base de datos."
+        )
+      )
       .finally(() => alive && setLoading(false));
     return () => {
       alive = false;
@@ -40,105 +46,115 @@ export function ZonasManager() {
     if (!nombre) return;
     setBusy(true);
     setError("");
-    const orden = zonas.length ? Math.max(...zonas.map((z) => z.orden ?? 0)) + 1 : 0;
+    const orden = medios.length ? Math.max(...medios.map((m) => m.orden ?? 0)) + 1 : 0;
     try {
-      const res = await api("/zonas", { method: "POST", body: { nombre, orden } });
-      const row = res?.id ? res : { id: `tmp-${Date.now()}`, nombre, orden, activa: true };
-      setZonas((prev) => sortByOrden([...prev, row]));
+      const res = await api("/medios-pago", { method: "POST", body: { nombre, orden } });
+      const row = res?.id ? res : { id: `tmp-${Date.now()}`, nombre, orden, activo: true };
+      setMedios((prev) => sortByOrden([...prev, row]));
       setNuevo("");
     } catch (e) {
-      setError(e?.message || "No se pudo agregar la zona");
+      setError(e?.message || "No se pudo agregar el medio de pago");
     } finally {
       setBusy(false);
     }
   }
 
-  async function toggle(z) {
-    const activa = !z.activa;
-    setZonas((prev) => prev.map((x) => (x.id === z.id ? { ...x, activa } : x)));
+  async function toggle(m) {
+    const activo = !m.activo;
+    setMedios((prev) => prev.map((x) => (x.id === m.id ? { ...x, activo } : x)));
     try {
-      await api(`/zonas/${z.id}`, { method: "PATCH", body: { activa } });
+      await api(`/medios-pago/${m.id}`, { method: "PATCH", body: { activo } });
     } catch {
-      setZonas((prev) => prev.map((x) => (x.id === z.id ? { ...x, activa: z.activa } : x)));
-      setError("No se pudo actualizar la zona");
+      setMedios((prev) => prev.map((x) => (x.id === m.id ? { ...x, activo: m.activo } : x)));
+      setError("No se pudo actualizar el medio de pago");
     }
   }
 
-  function startEdit(z) {
-    setEditId(z.id);
-    setEditVal(z.nombre);
+  function startEdit(m) {
+    setEditId(m.id);
+    setEditVal(m.nombre);
   }
 
-  async function saveEdit(z) {
+  async function saveEdit(m) {
     const nombre = editVal.trim();
     setEditId(null);
-    if (!nombre || nombre === z.nombre) return;
-    const prevNombre = z.nombre;
-    setZonas((prev) => prev.map((x) => (x.id === z.id ? { ...x, nombre } : x)));
+    if (!nombre || nombre === m.nombre) return;
+    const prevNombre = m.nombre;
+    setMedios((prev) => prev.map((x) => (x.id === m.id ? { ...x, nombre } : x)));
     try {
-      await api(`/zonas/${z.id}`, { method: "PATCH", body: { nombre } });
+      await api(`/medios-pago/${m.id}`, { method: "PATCH", body: { nombre } });
     } catch {
-      setZonas((prev) => prev.map((x) => (x.id === z.id ? { ...x, nombre: prevNombre } : x)));
-      setError("No se pudo renombrar la zona");
+      setMedios((prev) => prev.map((x) => (x.id === m.id ? { ...x, nombre: prevNombre } : x)));
+      setError("No se pudo renombrar el medio de pago");
     }
   }
 
-  async function move(z, dir) {
-    const list = sortByOrden(zonas);
-    const idx = list.findIndex((x) => x.id === z.id);
+  async function move(m, dir) {
+    const list = sortByOrden(medios);
+    const idx = list.findIndex((x) => x.id === m.id);
     const swap = dir === "up" ? idx - 1 : idx + 1;
     if (swap < 0 || swap >= list.length) return;
 
     const reordered = [...list];
     [reordered[idx], reordered[swap]] = [reordered[swap], reordered[idx]];
     const withOrden = reordered.map((x, i) => ({ ...x, orden: i }));
-    setZonas(withOrden);
+    setMedios(withOrden);
 
-    // Persistimos sólo las filas reales cuyo orden cambió.
     const changed = withOrden.filter(
       (x) => isReal(x.id) && (list.find((l) => l.id === x.id)?.orden ?? -1) !== x.orden
     );
     try {
       await Promise.all(
-        changed.map((x) => api(`/zonas/${x.id}`, { method: "PATCH", body: { orden: x.orden } }))
+        changed.map((x) => api(`/medios-pago/${x.id}`, { method: "PATCH", body: { orden: x.orden } }))
       );
     } catch {
       setError("No se pudo reordenar");
     }
   }
 
-  async function borrar(z) {
-    if (!(await confirm(`¿Borrar la zona "${z.nombre}"?`, { title: "Borrar zona", confirmText: "Borrar" }))) return;
+  async function borrar(m) {
+    if (
+      !(await confirm(`¿Borrar el medio de pago "${m.nombre}"?`, {
+        title: "Borrar medio de pago",
+        confirmText: "Borrar",
+      }))
+    )
+      return;
     setError("");
-    const prev = zonas;
-    setZonas((cur) => cur.filter((x) => x.id !== z.id));
-    if (!isReal(z.id)) return;
+    const prev = medios;
+    setMedios((cur) => cur.filter((x) => x.id !== m.id));
+    if (!isReal(m.id)) return;
     try {
-      await api(`/zonas/${z.id}`, { method: "DELETE" });
+      await api(`/medios-pago/${m.id}`, { method: "DELETE" });
     } catch (e) {
-      setZonas(prev);
+      setMedios(prev);
       const msg = String(e?.message || "");
       setError(
         /foreign key|violates|constraint/i.test(msg)
-          ? "No se puede borrar: hay entregas en esta zona. Desactivala en su lugar."
-          : "No se pudo borrar la zona."
+          ? "No se puede borrar: hay entregas con este medio de pago. Desactivalo en su lugar."
+          : "No se pudo borrar el medio de pago."
       );
     }
   }
 
   if (loading) {
-    return <p className="px-1 py-6 text-center text-sm text-slate-500">Cargando zonas…</p>;
+    return <p className="px-1 py-6 text-center text-sm text-slate-500">Cargando medios de pago…</p>;
   }
 
-  const list = sortByOrden(zonas);
+  const list = sortByOrden(medios);
 
   return (
     <div className="flex flex-col gap-4">
+      <p className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-900">
+        Estos son los medios de pago que aparecen al cargar una entrega. Podés agregar los tuyos
+        (ej: “Naranja X”, “Cuenta DNI”) y desactivar los que no uses.
+      </p>
+
       {/* Alta */}
       <div className="flex items-end gap-2">
         <div className="flex-1">
           <Input
-            placeholder="Nueva zona (ej: Centro)"
+            placeholder="Nuevo medio de pago (ej: Cuenta DNI)"
             value={nuevo}
             onChange={(e) => setNuevo(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && agregar()}
@@ -153,23 +169,22 @@ export function ZonasManager() {
       {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
 
       {list.length === 0 ? (
-        <p className="py-6 text-center text-sm text-slate-500">Todavía no hay zonas.</p>
+        <p className="py-6 text-center text-sm text-slate-500">Todavía no hay medios de pago.</p>
       ) : (
         <ul className="flex flex-col gap-2">
-          {list.map((z, i) => (
+          {list.map((m, i) => (
             <li
-              key={z.id}
+              key={m.id}
               className={cn(
                 "flex items-center gap-2 rounded-xl border bg-white px-3 py-2 dark:bg-slate-900",
-                z.activa
+                m.activo
                   ? "border-slate-200 dark:border-slate-800"
                   : "border-slate-200 opacity-60 dark:border-slate-800"
               )}
             >
-              {/* Reordenar */}
               <div className="flex flex-col">
                 <button
-                  onClick={() => move(z, "up")}
+                  onClick={() => move(m, "up")}
                   disabled={i === 0}
                   className="rounded p-0.5 text-slate-400 hover:text-slate-700 disabled:opacity-30 dark:hover:text-slate-200"
                   aria-label="Subir"
@@ -177,7 +192,7 @@ export function ZonasManager() {
                   <ChevronUp className="h-4 w-4" />
                 </button>
                 <button
-                  onClick={() => move(z, "down")}
+                  onClick={() => move(m, "down")}
                   disabled={i === list.length - 1}
                   className="rounded p-0.5 text-slate-400 hover:text-slate-700 disabled:opacity-30 dark:hover:text-slate-200"
                   aria-label="Bajar"
@@ -186,44 +201,41 @@ export function ZonasManager() {
                 </button>
               </div>
 
-              <MapPin className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-500" />
+              <CreditCard className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-500" />
 
-              {/* Nombre / edición */}
-              {editId === z.id ? (
+              {editId === m.id ? (
                 <input
                   autoFocus
                   value={editVal}
                   onChange={(e) => setEditVal(e.target.value)}
-                  onBlur={() => saveEdit(z)}
+                  onBlur={() => saveEdit(m)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") saveEdit(z);
+                    if (e.key === "Enter") saveEdit(m);
                     if (e.key === "Escape") setEditId(null);
                   }}
                   className="min-w-0 flex-1 rounded-lg border border-emerald-500 bg-white px-2 py-1 text-sm text-slate-900 focus:outline-none dark:bg-slate-900 dark:text-slate-50"
                 />
               ) : (
                 <span className="min-w-0 flex-1 truncate text-sm text-slate-900 dark:text-slate-50">
-                  {z.nombre}
+                  {m.nombre}
                 </span>
               )}
 
-              {/* Activar / desactivar */}
               <button
-                onClick={() => toggle(z)}
+                onClick={() => toggle(m)}
                 className={cn(
                   "rounded-full px-2 py-0.5 text-xs font-medium",
-                  z.activa
+                  m.activo
                     ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-400"
                     : "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"
                 )}
               >
-                {z.activa ? "Activa" : "Inactiva"}
+                {m.activo ? "Activo" : "Inactivo"}
               </button>
 
-              {/* Editar */}
-              {editId === z.id ? (
+              {editId === m.id ? (
                 <button
-                  onClick={() => saveEdit(z)}
+                  onClick={() => saveEdit(m)}
                   className="rounded-full p-1 text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/25"
                   aria-label="Guardar"
                 >
@@ -231,7 +243,7 @@ export function ZonasManager() {
                 </button>
               ) : (
                 <button
-                  onClick={() => startEdit(z)}
+                  onClick={() => startEdit(m)}
                   className="rounded-full p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200"
                   aria-label="Renombrar"
                 >
@@ -239,7 +251,7 @@ export function ZonasManager() {
                 </button>
               )}
               <button
-                onClick={() => borrar(z)}
+                onClick={() => borrar(m)}
                 className="rounded-full p-1 text-slate-400 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20 dark:hover:text-red-400"
                 aria-label="Borrar"
               >
@@ -255,4 +267,4 @@ export function ZonasManager() {
   );
 }
 
-export default ZonasManager;
+export default MediosPagoManager;

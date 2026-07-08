@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState, lazy, Suspense } from "react";
+import { useCallback, useEffect, useRef, useState, lazy, Suspense } from "react";
 import { useParams } from "react-router-dom";
-import { MapPin, Clock, Package, Truck, CheckCircle2, CalendarClock, AlertCircle } from "lucide-react";
+import { MapPin, Clock, Package, Truck, CheckCircle2, CalendarClock, AlertCircle, RefreshCw } from "lucide-react";
 import { api } from "../utils/api";
+import { haversine } from "../utils/ruta";
 import { cn } from "../utils/cn";
 
 // Leaflet sólo se descarga cuando hay posición del camión que mostrar.
@@ -36,39 +37,46 @@ export default function Seguir() {
   const [data, setData] = useState(null);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const timerRef = useRef(null);
+  const aliveRef = useRef(true);
 
-  useEffect(() => {
-    let alive = true;
-
-    async function load() {
+  const load = useCallback(
+    async (manual = false) => {
+      if (manual) setRefreshing(true);
       try {
         const res = await api(`/seguir/${token}`);
-        if (!alive) return;
+        if (!aliveRef.current) return;
         setData(res || null);
         setError(false);
         setLoaded(true);
 
-        // Re-poll: ~30s en camino, ~60s si sigue en curso, y frenar si terminó.
+        // Re-poll: ~20s en camino, ~30s si sigue en curso, y frenar si terminó.
         const estado = res?.estado;
         clearTimeout(timerRef.current);
         if (res && estado !== "entregado" && estado !== "no_entregado") {
-          timerRef.current = setTimeout(load, estado === "en_camino" ? 30000 : 60000);
+          timerRef.current = setTimeout(() => load(false), estado === "en_camino" ? 20000 : 30000);
         }
       } catch {
-        if (!alive) return;
+        if (!aliveRef.current) return;
         setError(true);
         setLoaded(true);
+      } finally {
+        if (manual) setRefreshing(false);
       }
-    }
+    },
+    [token]
+  );
 
+  useEffect(() => {
+    aliveRef.current = true;
     setLoaded(false);
-    load();
+    load(false);
     return () => {
-      alive = false;
+      aliveRef.current = false;
       clearTimeout(timerRef.current);
     };
-  }, [token]);
+  }, [load]);
 
   return (
     <div className="flex min-h-[100dvh] flex-col bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-50">
@@ -76,10 +84,19 @@ export default function Seguir() {
         <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-2xl bg-emerald-100 p-1.5 dark:bg-emerald-900/30">
           <img src="/logo.png" alt="MG Hogar" className="h-full w-full object-contain" />
         </div>
-        <div>
+        <div className="min-w-0 flex-1">
           <h1 className="text-lg font-semibold leading-tight">Seguí tu entrega</h1>
           <p className="text-sm text-slate-500">MG Hogar</p>
         </div>
+        <button
+          onClick={() => load(true)}
+          disabled={refreshing}
+          className="flex h-10 items-center gap-1.5 rounded-xl border border-slate-200 px-3 text-sm font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-60 dark:border-slate-800 dark:text-slate-300 dark:hover:bg-slate-800"
+          aria-label="Actualizar"
+        >
+          <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} />
+          Actualizar
+        </button>
       </header>
 
       <main className="flex-1 px-5 pb-safe">
@@ -132,6 +149,13 @@ function Seguimiento({ data }) {
 
   const hora = data?.hora_aprox ? String(data.hora_aprox).slice(0, 5) : null;
   const tieneCamion = data?.camion_lat != null && data?.camion_lng != null;
+  const tieneCasa = data?.destino_lat != null && data?.destino_lng != null;
+  // La ubicación del camión SÓLO se muestra mientras está en camino. Una vez
+  // entregado (o en cualquier otro estado) el cliente ya no ve dónde está el camión.
+  const mostrarCamion = enCamino && tieneCamion;
+  const camion = mostrarCamion ? { lat: Number(data.camion_lat), lng: Number(data.camion_lng) } : null;
+  const destino = tieneCasa ? { lat: Number(data.destino_lat), lng: Number(data.destino_lng) } : null;
+  const distanciaKm = camion && destino ? haversine(camion, destino) : null;
 
   return (
     <div className="flex flex-col gap-4">
@@ -227,17 +251,25 @@ function Seguimiento({ data }) {
         </InfoTile>
       </div>
 
-      {/* Mapa del camión (solo en camino y con posición) */}
-      {enCamino && tieneCamion ? (
+      {/* Mapa: tu casa (fija) + el camión (sólo mientras está en camino) */}
+      {tieneCasa || mostrarCamion ? (
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between px-1">
             <p className="text-sm font-semibold text-slate-900 dark:text-slate-50">
-              Tu pedido está en camino
+              {mostrarCamion ? "Tu pedido está en camino" : "Tu domicilio"}
             </p>
-            {data?.actualizado && (
+            {mostrarCamion && data?.actualizado && (
               <span className="text-xs text-slate-400">{haceCuanto(data.actualizado)}</span>
             )}
           </div>
+
+          {mostrarCamion && distanciaKm != null && (
+            <p className="inline-flex items-center gap-1 self-start rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-semibold text-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-400">
+              <Truck className="h-3 w-3" />
+              El camión está a ~{distanciaKm < 1 ? `${Math.round(distanciaKm * 1000)} m` : `${distanciaKm.toFixed(1)} km`}
+            </p>
+          )}
+
           <Suspense
             fallback={
               <div className="flex h-72 items-center justify-center rounded-2xl border border-slate-200 bg-white text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900">
@@ -245,8 +277,14 @@ function Seguimiento({ data }) {
               </div>
             }
           >
-            <SeguirMapa lat={Number(data.camion_lat)} lng={Number(data.camion_lng)} />
+            <SeguirMapa camion={camion} destino={destino} />
           </Suspense>
+
+          {enCamino && !tieneCamion && (
+            <p className="text-xs text-slate-400">
+              Todavía no recibimos la ubicación del camión. Va a aparecer acá en un ratito.
+            </p>
+          )}
         </div>
       ) : enCamino ? (
         <Banner
@@ -255,14 +293,16 @@ function Seguimiento({ data }) {
           title="Tu pedido está en camino"
           text="Todavía no recibimos la ubicación del camión. Va a aparecer acá en un ratito."
         />
-      ) : estado === "entregado" ? (
+      ) : null}
+
+      {estado === "entregado" && (
         <Banner
           tone="emerald"
           icon={CheckCircle2}
           title="¡Entregado!"
           text="Tu pedido ya fue entregado. ¡Gracias por tu compra!"
         />
-      ) : null}
+      )}
 
       <p className="pt-2 text-center text-xs text-slate-400">
         Actualización automática mientras tu pedido esté en camino.

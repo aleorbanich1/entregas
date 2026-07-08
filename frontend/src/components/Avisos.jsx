@@ -21,15 +21,15 @@ export function Avisos() {
       notify(t.title, t.text);
     };
 
-    const onHoja = (p) =>
+    const onHoja = (p) => {
+      const camion = p?.camion_nombre || (p?.camion_id ? `Camión ${p.camion_id}` : "El camión");
       push({
         tone: "emerald",
         icon: "route",
-        title: "Se publicó la hoja de ruta",
-        text: p?.camion_id
-          ? `Camión ${p.camion_id} · ${p?.cantidad ?? 0} paradas`
-          : "Revisá tu hoja de hoy",
+        title: "🚚 Camión listo para salir",
+        text: `${camion} está apto para salir · ${p?.cantidad ?? 0} entregas`,
       });
+    };
     const onDia = (p) =>
       push({
         tone: "slate",

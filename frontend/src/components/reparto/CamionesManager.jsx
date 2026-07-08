@@ -4,6 +4,7 @@ import { api } from "../../utils/api";
 import { Modal } from "../ui/Modal";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
+import { useConfirm } from "../ui/Confirm";
 import { cn } from "../../utils/cn";
 
 const isReal = (id) => /^\d+$/.test(String(id));
@@ -24,6 +25,7 @@ export function CamionesManager() {
   const [editando, setEditando] = useState(null); // camión o null
   const [edNombre, setEdNombre] = useState("");
   const [edPatente, setEdPatente] = useState("");
+  const [confirm, confirmUI] = useConfirm();
 
   useEffect(() => {
     let alive = true;
@@ -92,7 +94,7 @@ export function CamionesManager() {
   }
 
   async function borrar(c) {
-    if (!confirm(`¿Borrar el camión "${c.nombre}"?`)) return;
+    if (!(await confirm(`¿Borrar el camión "${c.nombre}"?`, { title: "Borrar camión", confirmText: "Borrar" }))) return;
     setError("");
     const prev = camiones;
     setCamiones((cur) => cur.filter((x) => x.id !== c.id));
@@ -215,6 +217,8 @@ export function CamionesManager() {
           </Button>
         </div>
       </Modal>
+
+      {confirmUI}
     </div>
   );
 }

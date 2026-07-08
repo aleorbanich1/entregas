@@ -83,7 +83,47 @@ Deno.serve(async (req) => {
   );
 
   try {
-    const { direccion } = await req.json().catch(() => ({}));
+    const payload = await req.json().catch(() => ({}));
+    const { direccion, lat, lng } = payload || {};
+
+    // ── REVERSE: punto del mapa → dirección legible ──
+    if (typeof lat === "number" && typeof lng === "number") {
+      const { data: cfg } = await admin
+        .from("entregas_config")
+        .select("contacto_email")
+        .eq("id", 1)
+        .maybeSingle();
+      const email = cfg?.contacto_email || "reparto@mghogar.local";
+      await throttle(admin);
+      try {
+        const rurl = `https://nominatim.openstreetmap.org/reverse?format=json&zoom=18&addressdetails=0&lat=${lat}&lon=${lng}`;
+        const rresp = await fetch(rurl, {
+          headers: {
+            "User-Agent": `MG-Hogar-Reparto/1.0 (${email})`,
+            "Accept": "application/json",
+            "Accept-Language": "es",
+          },
+        });
+        const rtext = await rresp.text();
+        if (rresp.status === 429 || rresp.status === 403 || /usage limit reached/i.test(rtext)) {
+          await log(admin, "bloqueado", `reverse HTTP ${rresp.status}`);
+          return json({ geocode_status: "fallo", error: "bloqueado", lat, lng });
+        }
+        let obj: { display_name?: string } = {};
+        try {
+          obj = JSON.parse(rtext);
+        } catch {
+          obj = {};
+        }
+        const direccionRev = obj?.display_name || "";
+        await log(admin, "ok", `reverse ${lat},${lng}`);
+        return json({ direccion: direccionRev, lat, lng, geocode_status: "ok" });
+      } catch (e) {
+        await log(admin, "error", `reverse: ${e}`);
+        return json({ geocode_status: "fallo", error: "error", lat, lng });
+      }
+    }
+
     if (!direccion || typeof direccion !== "string" || !direccion.trim()) {
       return json({ geocode_status: "fallo", error: "direccion requerida" }, 400);
     }

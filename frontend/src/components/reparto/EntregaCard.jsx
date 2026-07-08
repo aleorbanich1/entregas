@@ -10,6 +10,8 @@ import {
   Clock,
   Package,
   StickyNote,
+  RotateCcw,
+  Link2,
 } from "lucide-react";
 import { api } from "../../utils/api";
 import { Modal } from "../ui/Modal";
@@ -35,18 +37,23 @@ const fmtMonto = (m) =>
  * EntregaCard — tarjeta operativa del repartidor. Fallos defensivos: todo lo que
  * viene de la entrega (incluida realtime) se lee con optional chaining.
  */
-export function EntregaCard({ entrega, config, onChanged, onStartTracking }) {
+export function EntregaCard({ entrega, config, onChanged, onStartTracking, fechaHoy }) {
   const [modal, setModal] = useState(null); // null | 'no_entregado' | 'reprogramar'
   const [motivo, setMotivo] = useState("");
   const [nuevaFecha, setNuevaFecha] = useState(manana());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [copiado, setCopiado] = useState(false);
 
   const estado = entrega?.estado || "pendiente";
   const meta = ESTADO_META[estado] || ESTADO_META.pendiente;
   const pagado = !!entrega?.pagado;
   const enCamino = estado === "en_camino";
   const avisado = !!entrega?.avisado;
+  const tieneTel = String(entrega?.telefono || "").replace(/\D/g, "").length > 0;
+  // Estados "cerrados": aparecen tachados con opción de restaurar.
+  const finalizada =
+    estado === "entregado" || estado === "no_entregado" || estado === "reprogramado";
 
   async function cambiarEstado(nuevo, extra = {}, detalle = "") {
     setBusy(true);
@@ -83,9 +90,41 @@ export function EntregaCard({ entrega, config, onChanged, onStartTracking }) {
     await cambiarEstado("reprogramado", { fecha_entrega: nuevaFecha }, `→ ${nuevaFecha}`);
   }
 
-  async function whatsapp() {
+  // Anular: vuelve la entrega a "pendiente". Si estaba reprogramada, la trae de
+  // nuevo al día de hoy. Limpia el motivo de no-entrega.
+  async function restaurar() {
+    const extra = { motivo_no_entregado: null };
+    if (estado === "reprogramado" && fechaHoy) extra.fecha_entrega = fechaHoy;
+    await cambiarEstado("pendiente", extra, "restaurada");
+  }
+
+  function linkSeguimiento() {
     const origin = typeof window !== "undefined" ? window.location.origin : "";
-    const link = `${origin}/seguir/${entrega?.tracking_token || ""}`;
+    return `${origin}/seguir/${entrega?.tracking_token || ""}`;
+  }
+
+  async function copiarLink() {
+    const link = linkSeguimiento();
+    try {
+      await navigator.clipboard.writeText(link);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = link;
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand("copy");
+      } catch {
+        /* nada */
+      }
+      document.body.removeChild(ta);
+    }
+    setCopiado(true);
+    setTimeout(() => setCopiado(false), 2000);
+  }
+
+  async function whatsapp() {
+    const link = linkSeguimiento();
     const tel = String(entrega?.telefono || "").replace(/\D/g, "");
     const tpl =
       config?.whatsapp_template ||
@@ -120,15 +159,23 @@ export function EntregaCard({ entrega, config, onChanged, onStartTracking }) {
     }
   }
 
-  const terminado = estado === "entregado" || estado === "no_entregado";
-
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+    <div
+      className={cn(
+        "rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900",
+        finalizada && "opacity-60"
+      )}
+    >
       {/* Encabezado */}
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <h3 className="truncate text-base font-semibold text-slate-900 dark:text-slate-50">
+            <h3
+              className={cn(
+                "truncate text-base font-semibold text-slate-900 dark:text-slate-50",
+                finalizada && "line-through decoration-slate-400"
+              )}
+            >
               {entrega?.cliente || "Sin nombre"}
             </h3>
             <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-xs font-medium", meta.cls)}>
@@ -195,46 +242,67 @@ export function EntregaCard({ entrega, config, onChanged, onStartTracking }) {
       {error && <p className="mt-2 text-sm text-red-600 dark:text-red-400">{error}</p>}
 
       {/* Acciones */}
-      <div className="mt-3 flex flex-wrap gap-2">
-        {/* WhatsApp */}
-        <Button
-          variant={enCamino && !avisado ? "primary" : "secondary"}
-          size="sm"
-          onClick={whatsapp}
-          className={cn(enCamino && !avisado && "bg-emerald-600")}
-        >
-          <MessageCircle className="h-4 w-4" />
-          WhatsApp
-        </Button>
-
-        {!enCamino && !terminado && (
-          <Button size="sm" onClick={enCaminoAction} disabled={busy}>
-            <Truck className="h-4 w-4" />
-            En camino
+      {finalizada ? (
+        <div className="mt-3 flex items-center justify-between gap-2">
+          <span className="text-xs text-slate-400">
+            {estado === "reprogramado"
+              ? "Reprogramada"
+              : estado === "entregado"
+              ? "Entregada"
+              : "No entregada"}
+          </span>
+          <Button variant="secondary" size="sm" onClick={restaurar} disabled={busy}>
+            <RotateCcw className="h-4 w-4" />
+            Restaurar
           </Button>
-        )}
-
-        {enCamino && (
-          <>
-            <Button size="sm" onClick={() => cambiarEstado("entregado")} disabled={busy}>
-              <Check className="h-4 w-4" />
-              Entregado
+        </div>
+      ) : (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {/* WhatsApp: sólo si la entrega tiene teléfono */}
+          {tieneTel && (
+            <Button
+              variant={enCamino && !avisado ? "primary" : "secondary"}
+              size="sm"
+              onClick={whatsapp}
+              className={cn(enCamino && !avisado && "bg-emerald-600")}
+            >
+              <MessageCircle className="h-4 w-4" />
+              WhatsApp
             </Button>
-            <Button variant="danger" size="sm" onClick={() => setModal("no_entregado")} disabled={busy}>
-              <X className="h-4 w-4" />
-              No entregado
-            </Button>
-          </>
-        )}
+          )}
 
-        {/* Reprogramar disponible salvo cuando ya está entregado */}
-        {estado !== "entregado" && (
+          {/* Copiar link de seguimiento (para enviar a mano o si no hay teléfono) */}
+          <Button variant="secondary" size="sm" onClick={copiarLink}>
+            {copiado ? <Check className="h-4 w-4" /> : <Link2 className="h-4 w-4" />}
+            {copiado ? "¡Copiado!" : "Copiar link"}
+          </Button>
+
+          {!enCamino && (
+            <Button size="sm" onClick={enCaminoAction} disabled={busy}>
+              <Truck className="h-4 w-4" />
+              En camino
+            </Button>
+          )}
+
+          {enCamino && (
+            <>
+              <Button size="sm" onClick={() => cambiarEstado("entregado")} disabled={busy}>
+                <Check className="h-4 w-4" />
+                Entregado
+              </Button>
+              <Button variant="danger" size="sm" onClick={() => setModal("no_entregado")} disabled={busy}>
+                <X className="h-4 w-4" />
+                No entregado
+              </Button>
+            </>
+          )}
+
           <Button variant="secondary" size="sm" onClick={() => setModal("reprogramar")} disabled={busy}>
             <CalendarClock className="h-4 w-4" />
             Reprogramar
           </Button>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Modal: motivo no entregado */}
       <Modal isOpen={modal === "no_entregado"} onClose={() => setModal(null)} title="No entregado">

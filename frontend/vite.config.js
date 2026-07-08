@@ -108,6 +108,14 @@ export default defineConfig({
           if (!id.includes('node_modules')) return
           if (id.includes('leaflet')) return 'leaflet-vendor'
           if (id.includes('framer-motion')) return 'motion-vendor'
+          // jsPDF y su árbol de dependencias: sólo se usan al generar el PDF
+          // (import dinámico), así que van a un chunk aparte que carga on-demand.
+          if (
+            /[\\/]node_modules[\\/](jspdf|canvg|rgbcolor|stackblur-canvas|raf|performance-now|html2canvas|css-line-break|text-segmentation)[\\/]/.test(
+              id
+            )
+          )
+            return 'pdf-vendor'
           return 'vendor'
         },
       },

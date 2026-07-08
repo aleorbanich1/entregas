@@ -3,7 +3,6 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { OSM_ATTRIBUTION } from "../../utils/config";
 
-// Marcador del camión (divIcon emerald). Sin interacción: es solo lectura.
 const truckIcon = L.divIcon({
   className: "",
   html: `<div style="display:flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:9999px;background:#059669;box-shadow:0 2px 6px rgba(0,0,0,.35);border:2px solid #fff">
@@ -12,41 +11,67 @@ const truckIcon = L.divIcon({
   iconSize: [34, 34],
   iconAnchor: [17, 17],
 });
+const casaIcon = L.divIcon({
+  className: "",
+  html: `<div style="display:flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:9999px;background:#0f172a;color:#fff;font-size:15px;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.35)">🏠</div>`,
+  iconSize: [30, 30],
+  iconAnchor: [15, 15],
+});
 
-/** Mapa Leaflet de solo lectura que muestra (y sigue) la posición del camión. */
-export function SeguirMapa({ lat, lng }) {
+/**
+ * SeguirMapa (solo lectura) — muestra la casa del cliente (fija) y el camión
+ * (se actualiza). Encuadra ambos puntos.
+ */
+export function SeguirMapa({ camion, destino }) {
   const elRef = useRef(null);
   const mapRef = useRef(null);
-  const markerRef = useRef(null);
+  const truckRef = useRef(null);
 
   // Init una sola vez.
   useEffect(() => {
-    if (mapRef.current || !elRef.current || lat == null || lng == null) return;
-    const map = L.map(elRef.current, { zoomControl: true, attributionControl: true }).setView(
-      [lat, lng],
-      15
-    );
+    if (mapRef.current || !elRef.current) return;
+    const first =
+      destino?.lat != null ? [destino.lat, destino.lng] : camion?.lat != null ? [camion.lat, camion.lng] : [-34.9, -57.95];
+    const map = L.map(elRef.current, { zoomControl: true, attributionControl: true }).setView(first, 14);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       attribution: OSM_ATTRIBUTION,
       maxZoom: 19,
     }).addTo(map);
-    markerRef.current = L.marker([lat, lng], { icon: truckIcon }).addTo(map);
+
+    if (destino?.lat != null && destino?.lng != null) {
+      L.marker([destino.lat, destino.lng], { icon: casaIcon }).addTo(map).bindPopup("Tu domicilio");
+    }
+    if (camion?.lat != null && camion?.lng != null) {
+      truckRef.current = L.marker([camion.lat, camion.lng], { icon: truckIcon }).addTo(map);
+    }
+
+    fit(map);
     mapRef.current = map;
     setTimeout(() => map.invalidateSize(), 120);
     return () => {
       map.remove();
       mapRef.current = null;
-      markerRef.current = null;
+      truckRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Actualizar posición cuando cambian las coords (poll cada ~30s).
+  // Mover el camión cuando llega una posición nueva (poll ~30s).
   useEffect(() => {
-    if (!mapRef.current || lat == null || lng == null) return;
-    if (markerRef.current) markerRef.current.setLatLng([lat, lng]);
-    mapRef.current.panTo([lat, lng]);
-  }, [lat, lng]);
+    const map = mapRef.current;
+    if (!map || camion?.lat == null || camion?.lng == null) return;
+    if (truckRef.current) truckRef.current.setLatLng([camion.lat, camion.lng]);
+    else truckRef.current = L.marker([camion.lat, camion.lng], { icon: truckIcon }).addTo(map);
+    fit(map);
+  }, [camion?.lat, camion?.lng]);
+
+  function fit(map) {
+    const pts = [];
+    if (destino?.lat != null && destino?.lng != null) pts.push([destino.lat, destino.lng]);
+    if (camion?.lat != null && camion?.lng != null) pts.push([camion.lat, camion.lng]);
+    if (pts.length === 1) map.setView(pts[0], 15);
+    else if (pts.length > 1) map.fitBounds(pts, { padding: [40, 40] });
+  }
 
   return (
     <div

@@ -1,4 +1,4 @@
-import { useEffect, useState, lazy, Suspense } from "react";
+import { useEffect, useRef, useState, lazy, Suspense } from "react";
 import { Plus, Check, MapPin, AlertCircle } from "lucide-react";
 import { api } from "../../utils/api";
 import { Modal } from "../ui/Modal";
@@ -16,7 +16,8 @@ const FRANJAS = [
   { id: "tarde", label: "Tarde" },
   { id: "libre", label: "Libre" },
 ];
-const MEDIOS = ["Efectivo", "Transferencia", "Tarjeta", "MercadoPago", "Otro"];
+// Fallback si todavía no se cargó/creó el catálogo de medios de pago.
+const MEDIOS_DEFAULT = ["Efectivo", "Transferencia", "Tarjeta", "MercadoPago", "Otro"];
 
 // Parseo al mediodía para evitar el corrimiento de día (zona -03).
 const parseDia = (d) => new Date(`${d}T12:00:00`);
@@ -35,6 +36,7 @@ export function EntregaForm({ open, onClose, fechaDefault, onCreated, entrega })
   const isEdit = !!entrega;
   const [zonas, setZonas] = useState([]);
   const [camiones, setCamiones] = useState([]);
+  const [medios, setMedios] = useState([]); // catálogo editable de medios de pago
   const [origen, setOrigen] = useState(null); // centro del mapa (origen del local)
 
   // Campos
@@ -62,9 +64,11 @@ export function EntregaForm({ open, onClose, fechaDefault, onCreated, entrega })
   const [lng, setLng] = useState(null);
   const [geoStatus, setGeoStatus] = useState(null);
 
-  const [step, setStep] = useState("form"); // 'form' | 'map'
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const revTimer = useRef();
+  // Si el usuario escribe un nombre a mano, el reverse-geocode no lo pisa.
+  const dirTouched = useRef(false);
 
   // Al abrir: cargar catálogos y precargar/resetear el formulario.
   useEffect(() => {
@@ -97,16 +101,21 @@ export function EntregaForm({ open, onClose, fechaDefault, onCreated, entrega })
     }
     setShowCal(false);
     setAddingZona(false); setNuevaZona("");
-    setStep("form"); setError("");
+    setError("");
+    dirTouched.current = false;
 
     let alive = true;
-    Promise.allSettled([api("/zonas"), api("/camiones"), api("/config")]).then(
-      ([z, c, cfg]) => {
+    Promise.allSettled([api("/zonas"), api("/camiones"), api("/config"), api("/medios-pago")]).then(
+      ([z, c, cfg, mp]) => {
         if (!alive) return;
         if (z.status === "fulfilled") setZonas((z.value || []).filter((x) => x.activa));
         if (c.status === "fulfilled") setCamiones((c.value || []).filter((x) => x.activo));
         if (cfg.status === "fulfilled" && cfg.value?.origen_lat != null) {
           setOrigen([cfg.value.origen_lat, cfg.value.origen_lng]);
+        }
+        // Medios de pago activos; si falla o está vacío, se usa el fallback genérico.
+        if (mp.status === "fulfilled" && Array.isArray(mp.value)) {
+          setMedios(mp.value.filter((x) => x.activo !== false));
         }
       }
     );
@@ -133,9 +142,14 @@ export function EntregaForm({ open, onClose, fechaDefault, onCreated, entrega })
   }
 
   function buildBody(la, ln, status) {
+    const dir =
+      direccion.trim() ||
+      (la != null && ln != null
+        ? `Ubicación ${Number(la).toFixed(5)}, ${Number(ln).toFixed(5)}`
+        : "");
     return {
       cliente: cliente.trim(),
-      direccion: direccion.trim(),
+      direccion: dir,
       telefono: telefono.trim() || null,
       zona_id: zonaId ? Number(zonaId) : null,
       camion_id: camionId ? Number(camionId) : null,
@@ -192,123 +206,97 @@ export function EntregaForm({ open, onClose, fechaDefault, onCreated, entrega })
     }
   }
 
+  // Marcar la ubicación en el mapa. Traduce el punto a una dirección (reverse).
+  function onPin(la, ln) {
+    setLat(la);
+    setLng(ln);
+    setGeoStatus("manual");
+    setError("");
+    // Al (re)marcar el pin volvemos a permitir que el reverse-geocode sugiera un
+    // nombre; si el usuario ya escribió uno a mano, se respeta.
+    dirTouched.current = false;
+    clearTimeout(revTimer.current);
+    revTimer.current = setTimeout(async () => {
+      try {
+        const res = await api("/geocode", { method: "POST", body: { lat: la, lng: ln } });
+        if (res?.direccion && !dirTouched.current) {
+          setDireccion(res.direccion);
+          setGeoStatus("ok");
+        }
+      } catch {
+        // sin reverse igual guardamos con las coordenadas
+      }
+    }, 600);
+  }
+
   async function guardar() {
-    if (!cliente.trim() || !direccion.trim()) {
-      setError("Cliente y dirección son obligatorios.");
+    if (!cliente.trim()) {
+      setError("Poné el nombre del cliente.");
+      return;
+    }
+    if (lat == null || lng == null) {
+      setError("Marcá la ubicación en el mapa.");
       return;
     }
     setError("");
-
-    // Editando y la dirección no cambió: conservamos las coordenadas, no re-geocodificamos.
-    if (isEdit && direccion.trim() === (entrega.direccion || "").trim()) {
-      return persistir(lat, lng, geoStatus || "pendiente");
-    }
-
-    // Si ya se marcó a mano, no volvemos a geocodificar.
-    if (geoStatus === "manual" && lat != null) return persistir(lat, lng, "manual");
-
-    setSaving(true);
-    try {
-      const res = await api("/geocode", { method: "POST", body: { direccion: direccion.trim() } });
-      if (res?.geocode_status === "ok" && res.lat != null) {
-        setLat(res.lat);
-        setLng(res.lng);
-        setGeoStatus("ok");
-        setSaving(false);
-        return persistir(res.lat, res.lng, "ok");
-      }
-      // No encontrada → ir al mapa para marcar a mano.
-      setGeoStatus(res?.geocode_status || "fallo");
-      setSaving(false);
-      setStep("map");
-    } catch {
-      // Offline o error de la función → fallback manual.
-      setGeoStatus("fallo");
-      setSaving(false);
-      setStep("map");
-    }
+    return persistir(lat, lng, geoStatus || "manual");
   }
 
   const pinPuesto = lat != null && lng != null;
+
+  // Opciones de medio de pago: catálogo activo (o fallback). Si la entrega ya tenía
+  // un medio que quedó inactivo/borrado, lo mostramos igual para no perderlo.
+  const medioOpciones = (() => {
+    const base = medios.length ? medios.map((m) => m.nombre) : MEDIOS_DEFAULT;
+    return medioPago && !base.includes(medioPago) ? [medioPago, ...base] : base;
+  })();
 
   return (
     <Modal
       isOpen={open}
       onClose={onClose}
-      title={step === "map" ? "Marcar ubicación" : isEdit ? "Editar entrega" : "Nueva entrega"}
+      title={isEdit ? "Editar entrega" : "Nueva entrega"}
     >
-      {step === "map" ? (
-        <div className="flex flex-col gap-3">
-          <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-amber-900 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-300">
-            <AlertCircle size={18} className="mt-0.5 shrink-0" />
-            <p className="text-sm">
-              No pudimos ubicar la dirección automáticamente. Tocá el mapa para marcar
-              dónde es (se guarda como ubicación manual).
-            </p>
-          </div>
-
-          <Suspense
-            fallback={
-              <div className="flex h-64 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900">
-                Cargando mapa…
-              </div>
-            }
-          >
-            <MapPicker
-              lat={lat}
-              lng={lng}
-              center={origen}
-              onChange={(la, ln) => {
-                setLat(la);
-                setLng(ln);
-                setGeoStatus("manual");
-              }}
-            />
-          </Suspense>
-
-          {pinPuesto && (
-            <p className="inline-flex items-center gap-1 self-start rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-400">
-              <MapPin className="h-3 w-3" />
-              {Number(lat).toFixed(5)}, {Number(lng).toFixed(5)}
-            </p>
-          )}
-
-          {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
-
-          <div className="flex flex-col gap-2 pt-1">
-            <Button onClick={() => persistir(lat, lng, "manual")} disabled={saving || !pinPuesto}>
-              {saving ? "Guardando…" : "Confirmar ubicación y guardar"}
-            </Button>
-            <div className="flex gap-2">
-              <Button variant="ghost" className="flex-1" onClick={() => setStep("form")} disabled={saving}>
-                Volver
-              </Button>
-              <Button
-                variant="secondary"
-                className="flex-1"
-                onClick={() => persistir(null, null, "fallo")}
-                disabled={saving}
-              >
-                Guardar sin ubicación
-              </Button>
-            </div>
-          </div>
-        </div>
-      ) : (
         <div className="flex flex-col gap-3">
           <Field label="Cliente" required>
             <Input value={cliente} onChange={(e) => setCliente(e.target.value)} placeholder="Nombre del cliente" autoFocus />
           </Field>
 
-          <Field label="Dirección" required>
-            <Input
-              value={direccion}
-              onChange={(e) => {
-                setDireccion(e.target.value);
-                if (geoStatus) setGeoStatus(null);
-              }}
-              placeholder="Calle 123, Localidad"
-            />
+          {/* Ubicación: se marca en el mapa; la dirección se autocompleta por reverse
+              y se puede editar a mano (nombre propio) sin que eso busque en el mapa */}
+          <Field label="Ubicación" required>
+            <p className="mb-2 text-xs text-slate-500">
+              Tocá el mapa (o arrastrá el pin) para marcar dónde es la entrega.
+            </p>
+            <Suspense
+              fallback={
+                <div className="flex h-64 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900">
+                  Cargando mapa…
+                </div>
+              }
+            >
+              <MapPicker lat={lat} lng={lng} center={origen} onChange={onPin} />
+            </Suspense>
+            {pinPuesto && (
+              <div className="mt-3">
+                <label className="mb-1 ml-1 flex items-center gap-1 text-xs font-medium text-slate-600 dark:text-slate-400">
+                  <MapPin className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-500" />
+                  Nombre de esta ubicación
+                </label>
+                <Input
+                  value={direccion}
+                  onChange={(e) => {
+                    setDireccion(e.target.value);
+                    dirTouched.current = true; // el usuario mandó: no lo pisamos
+                  }}
+                  placeholder="Detectando dirección…"
+                />
+                <p className="mt-1 ml-1 text-xs text-slate-400">
+                  Podés escribir un nombre propio (ej: “Depósito López”, “Casa fondo verde”). El pin
+                  ya define la ubicación; esto es sólo cómo se ve en la app y el PDF.
+                </p>
+              </div>
+            )}
           </Field>
 
           <Field label="Teléfono">
@@ -449,7 +437,7 @@ export function EntregaForm({ open, onClose, fechaDefault, onCreated, entrega })
               <div className="flex-1">
                 <Select value={medioPago} onChange={(e) => setMedioPago(e.target.value)}>
                   <option value="">Medio de pago</option>
-                  {MEDIOS.map((m) => (
+                  {medioOpciones.map((m) => (
                     <option key={m} value={m}>
                       {m}
                     </option>
@@ -488,7 +476,6 @@ export function EntregaForm({ open, onClose, fechaDefault, onCreated, entrega })
             {saving ? "Guardando…" : isEdit ? "Guardar cambios" : "Guardar entrega"}
           </Button>
         </div>
-      )}
     </Modal>
   );
 }
